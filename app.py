@@ -4,7 +4,8 @@ import plotly.express as px
 import numpy as np
 from datetime import timedelta
 
-st.set_page_config(page_title="Meta広告 統合分析ボード", layout="wide")
+# ページ設定
+st.set_page_config(page_title="Meta広告 統合分析ダッシュボード", layout="wide")
 st.title("🚀 Meta広告 統合分析ダッシュボード")
 
 uploaded_file = st.file_uploader("Meta広告のレポートCSVを選択してください", type='csv')
@@ -30,7 +31,7 @@ if uploaded_file is not None:
         selected_campaigns = st.sidebar.multiselect("キャンペーン選択", all_campaigns, default=all_campaigns[:1])
         f_df = df[df[col_campaign].isin(selected_campaigns)].copy()
 
-        # 日別集計
+        # --- 1. 日別集計（グラフ用） ---
         df_daily = f_df.groupby([col_date, col_campaign]).agg({
             col_cost: 'sum', col_lead: 'sum', col_freq: 'mean'
         }).reset_index()
@@ -39,7 +40,8 @@ if uploaded_file is not None:
 
         # --- サマリー表示 ---
         c1, c2, c3, c4 = st.columns(4)
-        t_cost, t_leads = f_df[col_cost].sum(), f_df[col_lead].sum()
+        t_cost = f_df[col_cost].sum()
+        t_leads = f_df[col_lead].sum()
         c1.metric("総消化金額", f"¥{int(t_cost):,}")
         c2.metric("総リード数", f"{int(t_leads):,}")
         c3.metric("平均CPA", f"¥{int(t_cost/t_leads):,}" if t_leads > 0 else "¥0")
@@ -47,20 +49,18 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- グラフ表示（土日の背景色追加） ---
-        st.subheader("📈 日次パフォーマンス推移")
-        tab1, tab2 = st.tabs(["💰 CPA推移", "🔄 フリークエンシー推移"])
+        # --- 2. グラフ表示（土日の背景色追加） ---
+        st.subheader("📈 時系列パフォーマンス推移")
+        tab1, tab2 = st.tabs(["💰 日次CPA", "🔄 フリークエンシー"])
 
-        # 土日の範囲を特定する関数
         def add_weekend_shading(fig, min_date, max_date):
             curr_date = min_date
             while curr_date <= max_date:
-                if curr_date.weekday() == 5:  # 土曜日
+                if curr_date.weekday() == 5: # 土曜日
                     fig.add_vrect(
                         x0=curr_date.strftime('%Y-%m-%d'),
                         x1=(curr_date + timedelta(days=1)).strftime('%Y-%m-%d'),
-                        fillcolor="gray", opacity=0.2, line_width=0,
-                        annotation_text="Weekend", annotation_position="top left"
+                        fillcolor="gray", opacity=0.1, line_width=0
                     )
                 curr_date += timedelta(days=1)
             return fig
@@ -77,12 +77,37 @@ if uploaded_file is not None:
             fig_freq = add_weekend_shading(fig_freq, min_d, max_d)
             st.plotly_chart(fig_freq, use_container_width=True)
 
-        # --- クリエイティブ分析（以下省略・前回同様） ---
         st.divider()
-        st.subheader("🎨 クリエイティブ詳細")
-        ad_sum = f_df.groupby(col_ad).agg({col_cost: 'sum', col_lead: 'sum', col_freq: 'mean'}).reset_index()
-        ad_sum['CPA'] = (ad_sum[col_cost] / ad_sum[col_lead]).replace([np.inf, -np.inf], 0).fillna(0)
-        st.dataframe(ad_sum.sort_values('CPA'))
+
+        # --- 3. クリエイティブ分析（表と図） ---
+        st.subheader("🎨 クリエイティブ別分析")
+        
+        # クリエイティブ単位の集計
+        ad_summary = f_df.groupby(col_ad).agg({col_cost: 'sum', col_lead: 'sum', col_freq: 'mean'}).reset_index()
+        ad_summary['CPA'] = (ad_summary[col_cost] / ad_summary[col_lead]).replace([np.inf, -np.inf], np.nan).fillna(0)
+        ad_summary = ad_summary.sort_values('CPA', ascending=True)
+
+        col_left, col_right = st.columns([1, 1])
+
+        with col_left:
+            st.write("**パフォーマンス一覧**")
+            disp_ad = ad_summary.copy()
+            disp_ad['消化金額'] = disp_ad[col_cost].map('¥{:,.0f}'.format)
+            disp_ad['CPA'] = disp_ad['CPA'].map('¥{:,.0f}'.format)
+            disp_ad['頻度'] = disp_ad[col_freq].map('{:.2f}'.format)
+            st.dataframe(disp_ad[[col_ad, '消化金額', col_lead, 'CPA', '頻度']], use_container_width=True)
+
+        with col_right:
+            st.write("**獲得数 vs 効率（散布図）**")
+            # 獲得が1件以上あるものだけプロット
+            fig_scatter = px.scatter(
+                ad_summary[ad_summary[col_lead] > 0], 
+                x=col_lead, y='CPA', size=col_cost, color=col_ad, hover_name=col_ad,
+                labels={col_lead: '獲得数', 'CPA': 'CPA (円)'}
+            )
+            st.plotly_chart(fig_scatter, use_container_width=True)
 
     except Exception as e:
-        st.error(f"エラー: {e}")
+        st.error(f"エラーが発生しました: {e}")
+else:
+    st.info("CSVファイルをアップロードしてください。")
