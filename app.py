@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-from datetime import timedelta
+from datetime import date, timedelta
 
 st.set_page_config(page_title="Meta広告 統合分析ダッシュボード", layout="wide")
 st.title("🚀 Meta広告 統合分析ダッシュボード")
@@ -14,7 +14,7 @@ if uploaded_file is not None:
         df = pd.read_csv(uploaded_file)
         df = df.fillna(0)
 
-        # 列名の特定
+        # 列名の特定用キーワード
         def get_col(keywords):
             for col in df.columns:
                 if any(k in col for k in keywords): return col
@@ -30,9 +30,7 @@ if uploaded_file is not None:
         col_lead_orig = get_col(['リード'])
         col_app_orig = get_col(['アプリのインストール', 'アプリインストール'])
 
-        # 必須チェック
-        essential = {"日": col_date, "キャンペーン": col_campaign, "広告名": col_ad, "消化金額": col_cost}
-        if any(v is None for v in essential.values()):
+        if any(v is None for v in [col_date, col_campaign, col_ad, col_cost]):
             st.error("CSVに必要な列が見つかりません。")
             st.stop()
 
@@ -40,17 +38,26 @@ if uploaded_file is not None:
         df[col_date] = pd.to_datetime(df[col_date])
         df['獲得数'] = df.apply(lambda r: r[col_app_orig] if 'app' in str(r[col_campaign]).lower() and col_app_orig else (r[col_lead_orig] if col_lead_orig else 0), axis=1)
 
-        # --- サイドバー：日付選択とキャンペーン選択 ---
-        min_date_val = df[col_date].min().date()
-        max_date_val = df[col_date].max().date()
-        
+        # --- サイドバー：日付選択の範囲を2026年1月からに制限 ---
         st.sidebar.header("表示設定")
-        date_range = st.sidebar.date_input("分析期間を選択", [min_date_val, max_date_val], min_value=min_date_val, max_value=max_date_val)
         
-        all_campaigns = df[col_campaign].unique().tolist()
-        selected_campaigns = st.sidebar.multiselect("キャンペーン選択", all_campaigns, default=all_campaigns[:1])
+        # 制限範囲の設定
+        limit_start = date(2026, 1, 1)
+        data_max = df[col_date].max().date()
+        
+        # デフォルト選択範囲を「直近30日間」か「データがある範囲」にする
+        default_start = max(limit_start, data_max - timedelta(days=30))
+        
+        date_range = st.sidebar.date_input(
+            "分析期間を選択",
+            [default_start, data_max],
+            min_value=limit_start, # 1970年まで戻らないように制限
+            max_value=data_max
+        )
 
-        # フィルタリング適用
+        selected_campaigns = st.sidebar.multiselect("キャンペーン選択", df[col_campaign].unique().tolist(), default=df[col_campaign].unique().tolist()[:1])
+
+        # フィルタリング
         if len(date_range) == 2:
             start_date, end_date = date_range
             mask = (df[col_date].dt.date >= start_date) & (df[col_date].dt.date <= end_date) & (df[col_campaign].isin(selected_campaigns))
@@ -58,13 +65,14 @@ if uploaded_file is not None:
         else:
             st.stop()
 
-        # --- 1. 時系列グラフ ---
+        # --- 表示エリア（グラフ・分析） ---
+        # (以前の集計・グラフ・散布図ロジックをここに継続)
         df_daily = f_df.groupby([col_date, col_campaign]).agg({col_cost: 'sum', '獲得数': 'sum'}).reset_index()
         df_daily['CPA'] = (df_daily[col_cost] / df_daily['獲得数']).replace([np.inf, -np.inf], 0).fillna(0)
 
         st.subheader(f"📈 時系列推移 ({start_date} 〜 {end_date})")
         fig_line = px.line(df_daily, x=col_date, y='CPA', color=col_campaign, markers=True)
-        
+        # 土日の網掛け
         curr = pd.to_datetime(start_date)
         while curr <= pd.to_datetime(end_date):
             if curr.weekday() == 5:
@@ -74,36 +82,32 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # --- 2. クリエイティブ分析 ---
-        st.subheader("🎨 クリエイティブ別分析")
+        # クリエイティブ集計 & CPM計算
         agg_map = {col_cost: 'sum', '獲得数': 'sum', col_imp: 'sum'}
         if col_freq: agg_map[col_freq] = 'mean'
         if col_ctr: agg_map[col_ctr] = 'mean'
-        
         ad_summary = f_df.groupby(col_ad).agg(agg_map).reset_index()
         ad_summary['CPA'] = (ad_summary[col_cost] / ad_summary['獲得数']).replace([np.inf, -np.inf], 0).fillna(0)
         ad_summary['CPM'] = (ad_summary[col_cost] / ad_summary[col_imp] * 1000).replace([np.inf, -np.inf], 0).fillna(0)
 
+        st.subheader("🎨 クリエイティブ詳細")
         disp = ad_summary.sort_values('CPA').copy()
         disp['消化金額'] = disp[col_cost].map('¥{:,.0f}'.format)
         disp['CPA'] = disp['CPA'].map('¥{:,.0f}'.format)
         disp['CPM'] = disp['CPM'].map('¥{:,.0f}'.format)
-        if col_freq: disp['頻度'] = disp[col_freq].map('{:.2f}'.format)
-        if col_ctr: disp['CTR'] = (disp[col_ctr] * 100).map('{:.2f}%'.format)
+        st.dataframe(disp[[col_ad, '消化金額', '獲得数', 'CPA', 'CPM']], use_container_width=True)
 
-        st.dataframe(disp[[col_ad, '消化金額', '獲得数', 'CPA', 'CPM'] + ([f for f in ['頻度', 'CTR'] if f in disp.columns])], use_container_width=True)
-
-        # --- 3. 運用メモエリア ---
+        # --- 運用判断メモ ---
         st.divider()
-        st.subheader("📝 広告停止の判断基準（メモ）")
+        st.subheader("📝 広告停止の「鉄板」判断基準")
         
-        m_col1, m_col2, m_col3 = st.columns(3)
-        with m_col1:
-            st.info("**1. CPA（獲得単価）**\n許容CPAの1.5倍〜2倍を3日間継続して超えたら停止を検討。")
-        with m_col2:
-            st.warning("**2. フリークエンシー（頻度）**\n数値が2.0〜2.5を超え、かつCPAが悪化し始めたら「飽き」のサイン。停止して新クリエイティブへ。")
-        with m_col3:
-            st.success("**3. CTR & CPM**\nCTRが低すぎる＝画像が弱い。CPMが急騰＝ターゲットが競合過多。これらが悪化しCPAも高いなら即停止。")
+        m1, m2, m3 = st.columns(3)
+        with m1:
+            st.error("### 1. CPAの限界値\n目標CPAの**1.5倍を3日連続**で超えたら、そのクリエイティブは「負け」と判断して停止。")
+        with m2:
+            st.warning("### 2. フリークエンシー\n頻度が**2.0〜2.5**を超え、CPAが上昇し始めたら「摩耗」。内容が良くても休ませるか差し替え。")
+        with m3:
+            st.info("### 3. CPMとCTRの逆転\nCPMが上がっているのにCTRが下がっているなら、**Metaからの評価が最悪**な状態。即刻停止。")
 
     except Exception as e:
         st.error(f"エラー: {e}")
