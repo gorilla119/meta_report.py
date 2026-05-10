@@ -53,7 +53,7 @@ if uploaded_file is not None:
         st.divider()
 
         # --- 2. クリエイティブ分析（ここを強化） ---
-        st.subheader("🎨 クリエイティブ別 摩耗度分析")
+        st.subheader("🎨 クリエイティブ別 分析")
         
         ad_summary = f_df.groupby(col_ad).agg({col_cost: 'sum', col_lead: 'sum', col_freq: 'mean'}).reset_index()
         ad_summary['CPA'] = (ad_summary[col_cost] / ad_summary[col_lead]).replace([np.inf, -np.inf], np.nan).fillna(0)
