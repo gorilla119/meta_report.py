@@ -40,21 +40,11 @@ if uploaded_file is not None:
 
         # --- サイドバー：日付選択の範囲を2026年1月からに制限 ---
         st.sidebar.header("表示設定")
-        
-        # 制限範囲の設定
         limit_start = date(2026, 1, 1)
         data_max = df[col_date].max().date()
-        
-        # デフォルト選択範囲を「直近30日間」か「データがある範囲」にする
         default_start = max(limit_start, data_max - timedelta(days=30))
         
-        date_range = st.sidebar.date_input(
-            "分析期間を選択",
-            [default_start, data_max],
-            min_value=limit_start, # 1970年まで戻らないように制限
-            max_value=data_max
-        )
-
+        date_range = st.sidebar.date_input("分析期間を選択", [default_start, data_max], min_value=limit_start, max_value=data_max)
         selected_campaigns = st.sidebar.multiselect("キャンペーン選択", df[col_campaign].unique().tolist(), default=df[col_campaign].unique().tolist()[:1])
 
         # フィルタリング
@@ -65,8 +55,7 @@ if uploaded_file is not None:
         else:
             st.stop()
 
-        # --- 表示エリア（グラフ・分析） ---
-        # (以前の集計・グラフ・散布図ロジックをここに継続)
+        # --- 1. 時系列推移 ---
         df_daily = f_df.groupby([col_date, col_campaign]).agg({col_cost: 'sum', '獲得数': 'sum'}).reset_index()
         df_daily['CPA'] = (df_daily[col_cost] / df_daily['獲得数']).replace([np.inf, -np.inf], 0).fillna(0)
 
@@ -82,7 +71,9 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # クリエイティブ集計 & CPM計算
+        # --- 2. クリエイティブ分析（図と表） ---
+        st.subheader("🎨 クリエイティブ分析（図解）")
+        
         agg_map = {col_cost: 'sum', '獲得数': 'sum', col_imp: 'sum'}
         if col_freq: agg_map[col_freq] = 'mean'
         if col_ctr: agg_map[col_ctr] = 'mean'
@@ -90,24 +81,40 @@ if uploaded_file is not None:
         ad_summary['CPA'] = (ad_summary[col_cost] / ad_summary['獲得数']).replace([np.inf, -np.inf], 0).fillna(0)
         ad_summary['CPM'] = (ad_summary[col_cost] / ad_summary[col_imp] * 1000).replace([np.inf, -np.inf], 0).fillna(0)
 
-        st.subheader("🎨 クリエイティブ詳細")
+        col_fig1, col_fig2 = st.columns(2)
+        with col_fig1:
+            st.write("**獲得数 vs CPA（獲得規模の確認）**")
+            st.plotly_chart(px.scatter(ad_summary[ad_summary['獲得数'] > 0], x='獲得数', y='CPA', size=col_cost, color=col_ad, hover_name=col_ad), use_container_width=True)
+        with col_fig2:
+            if col_freq:
+                st.write("**頻度 vs CPA（摩耗チェック）**")
+                fig_freq_chart = px.scatter(ad_summary, x=col_freq, y='CPA', size=col_cost, color=col_ad, hover_name=col_ad)
+                fig_freq_chart.add_vline(x=2.0, line_dash="dash", line_color="red", annotation_text="限界ライン")
+                st.plotly_chart(fig_freq_chart, use_container_width=True)
+
+        st.write("**クリエイティブ詳細テーブル（CPAが良い順）**")
         disp = ad_summary.sort_values('CPA').copy()
         disp['消化金額'] = disp[col_cost].map('¥{:,.0f}'.format)
         disp['CPA'] = disp['CPA'].map('¥{:,.0f}'.format)
         disp['CPM'] = disp['CPM'].map('¥{:,.0f}'.format)
-        st.dataframe(disp[[col_ad, '消化金額', '獲得数', 'CPA', 'CPM']], use_container_width=True)
+        if col_freq: disp['頻度'] = disp[col_freq].map('{:.2f}'.format)
+        if col_ctr: disp['CTR'] = (disp[col_ctr] * 100).map('{:.2f}%'.format)
+        
+        show_cols = [col_ad, '消化金額', '獲得数', 'CPA', 'CPM']
+        if col_freq: show_cols.append('頻度')
+        if col_ctr: show_cols.append('CTR')
+        st.dataframe(disp[show_cols], use_container_width=True)
 
-        # --- 運用判断メモ ---
+        # --- 3. 運用判断メモ ---
         st.divider()
         st.subheader("📝 広告停止の「鉄板」判断基準")
-        
         m1, m2, m3 = st.columns(3)
         with m1:
-            st.error("### 1. CPAの限界値\n目標CPAの**1.5倍を3日連続**で超えたら、そのクリエイティブは「負け」と判断して停止。")
+            st.error("### 1. CPAの限界値\n目標CPAの**1.5倍を3日連続**で超えたら停止を検討。")
         with m2:
-            st.warning("### 2. フリークエンシー\n頻度が**2.0〜2.5**を超え、CPAが上昇し始めたら「摩耗」。内容が良くても休ませるか差し替え。")
+            st.warning("### 2. フリークエンシー\n頻度が**2.0〜2.5**を超え、CPAが悪化し始めたら「摩耗」。")
         with m3:
-            st.info("### 3. CPMとCTRの逆転\nCPMが上がっているのにCTRが下がっているなら、**Metaからの評価が最悪**な状態。即刻停止。")
+            st.info("### 3. CPMとCTR\nCPMが上昇しCTRが低下しているなら、即停止してクリエイティブを刷新。")
 
     except Exception as e:
         st.error(f"エラー: {e}")
